@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>rag-eval architecture</title>
+<style>
+  body { font-family: system-ui, sans-serif; margin: 0 auto; max-width: 1100px; padding: 24px 16px; background: #fff; color: #222; }
+  h1 { font-size: 1.4rem; } h2 { font-size: 1.1rem; margin-top: 32px; }
+  .mermaid { background: #fafafa; border: 1px solid #ddd; border-radius: 8px; padding: 16px; overflow-x: auto; }
+</style>
+</head>
+<body>
+<h1>rag-eval: how it works</h1>
+<p>Needs internet once to load the Mermaid library.</p>
+
+<h2>Architecture</h2>
+<pre class="mermaid">
+flowchart LR
+  subgraph ING["Ingestion (offline, re-runnable)"]
+    direction TB
+    W[("Wikipedia API<br/>75 titles")] --> C["corpus.py<br/>download to data/raw"]
+    C --> CH["chunk.py<br/>fixed | recursive"]
+    CH --> EM["fastembed<br/>bge-small embeddings"]
+    EM --> Q[("Qdrant<br/>local mode")]
+    CH --> J[("chunks_*.jsonl<br/>for BM25")]
+  end
+  subgraph SRV["Query path (FastAPI)"]
+    direction TB
+    U(["User question"]) --> A["POST /ask"]
+    A --> V["Vector search<br/>top 50"]
+    A --> B["BM25 search<br/>top 50"]
+    V --> R["RRF fusion<br/>top 20"]
+    B --> R
+    R --> X["Cross-encoder rerank<br/>top 5"]
+    X --> G["Groq LLM<br/>context-only prompt"]
+    G --> O(["Answer with [n] citations<br/>or INSUFFICIENT_CONTEXT"])
+  end
+  Q -.-> V
+  J -.-> B
+  subgraph EVL["Evaluation (make eval)"]
+    direction TB
+    GS[("golden.jsonl<br/>answerable + unanswerable")] --> RUN["eval/run.py<br/>2 chunkings x 3 modes"]
+    RUN --> M["recall@5, MRR, correctness,<br/>citations, refusals, latency, cost"]
+    M --> RES[("eval/results/ts.json")]
+  end
+  A -.same code path.-> RUN
+  classDef store fill:#eef,stroke:#669;
+  classDef llm fill:#fee,stroke:#c66;
+  class W,Q,J,GS,RES store;
+  class G llm;
+</pre>
+
+<h2>Request flow</h2>
+<pre class="mermaid">
+sequenceDiagram
+  participant U as User
+  participant API as FastAPI
+  participant IDX as Qdrant + BM25
+  participant RR as Reranker
+  participant LLM as Groq LLM
+  U->>API: POST /ask {question}
+  API->>IDX: vector top 50 + BM25 top 50
+  IDX-->>API: two ranked lists
+  API->>API: RRF fusion, keep 20
+  API->>RR: score (question, chunk) pairs
+  RR-->>API: top 5 chunks
+  API->>LLM: numbered context + question
+  LLM-->>API: cited answer or INSUFFICIENT_CONTEXT
+  API-->>U: answer, citations, sources
+</pre>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/mermaid/10.9.1/mermaid.min.js"></script>
+<script>mermaid.initialize({ startOnLoad: true, theme: "default" });</script>
+</body>
+</html>
